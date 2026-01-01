@@ -2,66 +2,116 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const mongoose = require("mongoose");
 const OpenAI = require("openai");
+const cron = require("node-cron");
 
-/* ===== BOT ===== */
+/* ================= INIT ================= */
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/* ===== MONGO ===== */
+const ADMIN_ID = Number(process.env.ADMIN_ID);
+
+/* ================= MONGO ================= */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB ulandi"))
-  .catch(err => console.log("❌ Mongo xato", err));
+  .catch(e => console.log("❌ Mongo xato", e));
 
-/* ===== USER MODEL ===== */
+/* ================= USER MODEL ================= */
 const userSchema = new mongoose.Schema({
   chatId: Number,
   daily: { type: Number, default: 0 },
   date: String,
-  isPremium: { type: Boolean, default: false }
+
+  isPremium: { type: Boolean, default: false },
+  premiumUntil: Date,
+
+  referredBy: Number,
+  referrals: { type: Number, default: 0 },
+
+  totalMessages: { type: Number, default: 0 }
 });
+
 const User = mongoose.model("User", userSchema);
 
+/* ================= HELPERS ================= */
 const today = () => new Date().toISOString().slice(0, 10);
+const BONUS_DAYS = 3;
+const PREMIUM_DAYS = 30;
 
-/* ===== LIMIT ===== */
+const addDays = (d, days) =>
+  new Date(d.getTime() + days * 24 * 60 * 60 * 1000);
+
+/* ================= LIMIT ================= */
 async function checkLimit(chatId) {
-  let user = await User.findOne({ chatId });
-  if (!user) user = await User.create({ chatId, date: today() });
+  let u = await User.findOne({ chatId });
+  if (!u) u = await User.create({ chatId, date: today() });
 
-  if (user.date !== today()) {
-    user.daily = 0;
-    user.date = today();
+  if (u.date !== today()) {
+    u.daily = 0;
+    u.date = today();
   }
 
-  if (user.isPremium) return true;
-  if (user.daily >= 10) return false;
+  if (u.isPremium && u.premiumUntil > new Date()) {
+    u.totalMessages++;
+    await u.save();
+    return true;
+  }
 
-  user.daily++;
-  await user.save();
+  if (u.daily >= 10) return false;
+
+  u.daily++;
+  u.totalMessages++;
+  await u.save();
   return true;
 }
 
-/* ===== START ===== */
-bot.onText(/\/start/, async msg => {
+/* ================= START + REF ================= */
+bot.onText(/\/start(?: (\d+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
+  const refId = match?.[1] ? Number(match[1]) : null;
 
-  if (!await User.findOne({ chatId })) {
-    await User.create({ chatId, date: today() });
+  let user = await User.findOne({ chatId });
+  if (!user) {
+    user = await User.create({
+      chatId,
+      date: today(),
+      referredBy: refId || null
+    });
+
+    if (refId && refId !== chatId) {
+      const refUser = await User.findOne({ chatId: refId });
+      if (refUser) {
+        refUser.referrals++;
+
+        const now = new Date();
+        if (refUser.isPremium && refUser.premiumUntil > now) {
+          refUser.premiumUntil = addDays(refUser.premiumUntil, BONUS_DAYS);
+        } else {
+          refUser.isPremium = true;
+          refUser.premiumUntil = addDays(now, BONUS_DAYS);
+        }
+
+        await refUser.save();
+        bot.sendMessage(refId,
+`🎉 Referal ishladi!
++${BONUS_DAYS} kun PREMIUM qo‘shildi`);
+      }
+    }
   }
 
   bot.sendMessage(chatId,
 `👋 Salom!
 
-🤖 AI Telegram Bot
-🧠 Savol bering
-🖼 Rasm yuboring
+🤖 ULTRA AI BOT
+🧠 GPT-4.1
+🖼 Vision
 
-⏳ Kuniga 10 bepul
-⭐ Premium — cheksiz`,
+⏳ Free: 10 / kun
+⭐ Premium: Cheksiz`,
 {
   reply_markup: {
     keyboard: [
       [{ text: "/ai" }, { text: "/premium" }],
+      [{ text: "/ref" }, { text: "/stats" }],
       [{ text: "/help" }]
     ],
     resize_keyboard: true
@@ -69,55 +119,77 @@ bot.onText(/\/start/, async msg => {
 });
 });
 
-/* ===== AI BUTTON ===== */
-bot.onText(/\/ai/, msg => {
+/* ================= COMMANDS ================= */
+bot.onText(/\/ai/, msg =>
   bot.sendMessage(msg.chat.id,
-`🤖 AI bo‘limi
+"🤖 AI tayyor!\nSavolingizni yozing"));
 
-Menga istalgan savol yozing ✍️
-Men sizga yordam beraman 🙂`);
+bot.onText(/\/help/, msg =>
+  bot.sendMessage(msg.chat.id,
+"/ai — AI\n/premium — premium\n/ref — referal\n/stats — statistika"));
+
+bot.onText(/\/ref/, msg => {
+  const link = `https://t.me/${process.env.BOT_USERNAME}?start=${msg.chat.id}`;
+  bot.sendMessage(msg.chat.id,
+`👥 Referal havola:
+${link}
+
+🎁 Har do‘st = +3 kun premium`);
 });
 
-/* ===== PREMIUM BUTTON ===== */
-bot.onText(/\/premium/, msg => {
-  bot.sendMessage(msg.chat.id,
-`⭐ PREMIUM TARIF
+/* ================= PREMIUM INFO ================= */
+bot.onText(/\/premium/, async msg => {
+  const u = await User.findOne({ chatId: msg.chat.id });
+  let status = "❌ Premium yo‘q";
 
-✅ Cheksiz AI javoblar
-✅ Rasm tahlili
+  if (u?.isPremium && u.premiumUntil > new Date()) {
+    status = `✅ Premium faol
+⏳ Tugaydi: ${u.premiumUntil.toLocaleDateString()}`;
+  }
+
+  bot.sendMessage(msg.chat.id,
+`⭐ PREMIUM (30 KUN)
+
+${status}
+
+✅ Cheksiz AI
+✅ Vision
 ✅ Limit yo‘q
 
-💳 30 kunlik premium
-(pul ulash keyin qo‘shiladi)`);
+💳 To‘lov tizimi ulangan`);
 });
 
-/* ===== HELP ===== */
-bot.onText(/\/help/, msg => {
+/* ================= STATS (ADMIN) ================= */
+bot.onText(/\/stats/, async msg => {
+  if (msg.chat.id !== ADMIN_ID) return;
+  const users = await User.countDocuments();
+  const premium = await User.countDocuments({ isPremium: true });
+
   bot.sendMessage(msg.chat.id,
-`ℹ️ Yordam
+`📊 STATISTIKA
 
-/ai — AI bilan suhbat
-/premium — premium ma’lumot
-/help — yordam
-
-🧠 Savol yozing
-🖼 Rasm yuboring`);
+👥 Users: ${users}
+⭐ Premium: ${premium}`);
 });
 
-/* ===== TEXT MESSAGE ===== */
+/* ================= AI TEXT ================= */
 bot.on("message", async msg => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
   const ok = await checkLimit(msg.chat.id);
-  if (!ok) {
+  if (!ok)
     return bot.sendMessage(msg.chat.id,
-      "❌ Kunlik limit tugadi\n⭐ /premium orqali oling");
-  }
+"❌ Limit tugadi\n⭐ /premium yoki /ref");
 
   const res = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
+    model: "gpt-4.1",
+    temperature: 0.7,
     messages: [
-      { role: "system", content: "Answer in user's language clearly." },
+      {
+        role: "system",
+        content:
+"Sen professional AI assistantsan. Foydalanuvchiga aniq, tushunarli va foydali javob ber."
+      },
       { role: "user", content: msg.text }
     ]
   });
@@ -125,20 +197,20 @@ bot.on("message", async msg => {
   bot.sendMessage(msg.chat.id, res.choices[0].message.content);
 });
 
-/* ===== IMAGE ===== */
+/* ================= IMAGE ================= */
 bot.on("photo", async msg => {
   const ok = await checkLimit(msg.chat.id);
-  if (!ok) return bot.sendMessage(msg.chat.id, "❌ Limit tugadi");
+  if (!ok) return;
 
   const photo = msg.photo.at(-1);
   const imageUrl = await bot.getFileLink(photo.file_id);
 
   const res = await openai.responses.create({
-    model: "gpt-4.1-mini",
+    model: "gpt-4.1",
     input: [{
       role: "user",
       content: [
-        { type: "input_text", text: "Rasmni tahlil qil va tushuntir" },
+        { type: "input_text", text: "Rasmni chuqur tahlil qil" },
         { type: "input_image", image_url: imageUrl }
       ]
     }]
@@ -147,4 +219,21 @@ bot.on("photo", async msg => {
   bot.sendMessage(msg.chat.id, res.output_text);
 });
 
-console.log("🤖 BOT ISHGA TUSHDI");
+/* ================= PREMIUM AUTO OFF ================= */
+cron.schedule("0 * * * *", async () => {
+  const now = new Date();
+  const expired = await User.find({
+    isPremium: true,
+    premiumUntil: { $lt: now }
+  });
+
+  for (const u of expired) {
+    u.isPremium = false;
+    u.premiumUntil = null;
+    await u.save();
+    bot.sendMessage(u.chatId,
+"⏳ Premium muddati tugadi");
+  }
+});
+
+console.log("🚀 ULTRA AI BOT ISHGA TUSHDI");
