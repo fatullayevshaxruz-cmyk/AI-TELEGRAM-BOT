@@ -248,7 +248,7 @@ bot.on("message", async msg => {
   const key = text.toLowerCase();
 
   const ok = await checkLimit(chatId);
-  if (!ok) return bot.sendMessage(chatId, "❌ Limit tugadi\n/premium \n Siz bu versiyada \nkuchli AI va Juda Tez\n javob berish va Cheksiz \nsavollarni qo'lga kiritasiz");
+  if (!ok) return bot.sendMessage(chatId, "❌ Limit tugadi\nMaslahat👇\n⭐️/premium \n Tez va Kuchli AI");
 
   const cached = getCache(key);
   if (cached) return bot.sendMessage(chatId, cached);
