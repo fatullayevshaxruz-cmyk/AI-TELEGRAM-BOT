@@ -4,16 +4,16 @@ const mongoose = require("mongoose");
 const OpenAI = require("openai");
 const cron = require("node-cron");
 
-/* ===== INIT ===== */
+/* ================= INIT ================= */
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/* ===== MONGO ===== */
+/* ================= MONGO ================= */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB ulandi"))
   .catch(err => console.log("❌ Mongo xato", err));
 
-/* ===== USER MODEL ===== */
+/* ================= USER MODEL ================= */
 const userSchema = new mongoose.Schema({
   chatId: Number,
   daily: { type: Number, default: 0 },
@@ -24,10 +24,37 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
+/* ================= HELPERS ================= */
 const today = () => new Date().toISOString().slice(0, 10);
 const REF_BONUS_DAYS = 3;
 
-/* ===== LIMIT ===== */
+/* ===== typing effekti ===== */
+async function showTyping(chatId, duration) {
+  const interval = setInterval(() => {
+    bot.sendChatAction(chatId, "typing");
+  }, 2500);
+
+  setTimeout(() => clearInterval(interval), duration);
+}
+
+/* ===== CACHE ===== */
+const aiCache = new Map();
+const CACHE_TTL = 1000 * 60 * 30; // 30 daqiqa
+
+function getCache(key) {
+  const item = aiCache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expire) {
+    aiCache.delete(key);
+    return null;
+  }
+  return item.value;
+}
+function setCache(key, value) {
+  aiCache.set(key, { value, expire: Date.now() + CACHE_TTL });
+}
+
+/* ================= LIMIT ================= */
 async function checkLimit(chatId) {
   let user = await User.findOne({ chatId });
   if (!user) user = await User.create({ chatId, date: today() });
@@ -38,19 +65,20 @@ async function checkLimit(chatId) {
   }
 
   if (user.isPremium && user.premiumUntil > new Date()) return true;
-  if (!user.isPremium && user.daily >= 10) return false;
+  if (user.daily >= 10) return false;
 
   user.daily++;
   await user.save();
   return true;
 }
 
-/* ===== START + REFERRAL ===== */
+/* ================= /START + REFERRAL ================= */
 bot.onText(/\/start(?: (\d+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const refId = match && match[1] ? Number(match[1]) : null;
+  const refId = match?.[1] ? Number(match[1]) : null;
 
   let user = await User.findOne({ chatId });
+
   if (!user) {
     user = await User.create({
       chatId,
@@ -62,154 +90,175 @@ bot.onText(/\/start(?: (\d+))?/, async (msg, match) => {
       const refUser = await User.findOne({ chatId: refId });
       if (refUser) {
         const now = new Date();
-        if (refUser.isPremium && refUser.premiumUntil > now) {
-          refUser.premiumUntil = new Date(
-            refUser.premiumUntil.getTime() + REF_BONUS_DAYS * 86400000
-          );
-        } else {
-          refUser.isPremium = true;
-          refUser.premiumUntil = new Date(
-            now.getTime() + REF_BONUS_DAYS * 86400000
-          );
-        }
+        refUser.isPremium = true;
+        refUser.premiumUntil =
+          refUser.premiumUntil && refUser.premiumUntil > now
+            ? new Date(refUser.premiumUntil.getTime() + REF_BONUS_DAYS * 86400000)
+            : new Date(now.getTime() + REF_BONUS_DAYS * 86400000);
         await refUser.save();
 
-        bot.sendMessage(refId,
-          `🎉 Siz do‘st chaqirdingiz!\n+${REF_BONUS_DAYS} kun PREMIUM qo‘shildi ⭐`);
+        bot.sendMessage(
+          refId,
+          `🎉 Do‘st taklif qilindi!\n+${REF_BONUS_DAYS} kun PREMIUM qo‘shildi ⭐`
+        );
       }
     }
   }
 
-  bot.sendMessage(chatId,
+  bot.sendMessage(
+    chatId,
 `👋 Salom!
 
-🤖 AI English Bot
+🤖 AI Premium Bot
 🧠 Savol bering
 🖼 Rasm yuboring
 
 ⏳ Kuniga 10 bepul
-⭐ Premium — cheksiz
-
-Buyruqlar:
-/ai /premium /ref /help`,
-{
-  reply_markup: {
-    keyboard: [
-      [{ text: "/ai" }, { text: "/premium" }],
-      [{ text: "/ref" }, { text: "/help" }]
-    ],
-    resize_keyboard: true
-  }
-});
-});
-
-/* ===== AI ===== */
-bot.onText(/\/ai/, msg => {
-  bot.sendMessage(msg.chat.id,
-`🤖 AI bo‘limi
-
-Savolingizni yozing ✍️
-Men yordam beraman 🙂`);
-});
-
-/* ===== PREMIUM ===== */
-bot.onText(/\/premium/, msg => {
-  bot.sendInvoice(
-    msg.chat.id,
-    "⭐ Premium (30 kun)",
-    "Cheksiz AI va rasm tahlili",
-    "premium_30_days",
-    "",
-    "XTR",
-    [{ label: "Premium 30 kun", amount: 100 }]
+⭐ Premium — tezroq va cheksiz`,
+    {
+      reply_markup: {
+        keyboard: [
+          [{ text: "/ai" }, { text: "/premium" }],
+          [{ text: "/ref" }, { text: "/help" }]
+        ],
+        resize_keyboard: true
+      }
+    }
   );
 });
 
-/* ===== REF ===== */
-bot.onText(/\/ref/, msg => {
-  const link = `https://t.me/${process.env.BOT_USERNAME}?start=${msg.chat.id}`;
-  bot.sendMessage(msg.chat.id,
-`👥 Do‘stlaringni taklif qil!
+/* ================= COMMANDS ================= */
+bot.onText(/\/ai/, msg =>
+  bot.sendMessage(msg.chat.id, "🤖 AI tayyor. Savolingizni yozing ✍️")
+);
 
-🎁 Har 1 odam = +${REF_BONUS_DAYS} kun PREMIUM
+bot.onText(/\/premium/, msg => {
+  bot.sendMessage(
+    msg.chat.id,
+`⭐ PREMIUM AFZALLIKLARI
 
-🔗 Havola:
-${link}`);
+⚡ Tezroq AI javoblar
+🧠 Aniqroq javoblar
+🖼 Rasm tahlili
+⏳ Limit yo‘q
+
+Premium bilan bot ancha tez ishlaydi 🚀`
+  );
+
+  // Agar Stars chiqsa, shu joyda sendInvoice ishlaydi
+  // bot.sendInvoice(...)
+  //Telegram stars (chiqganda ishklaydi) 
+bot.sendInvoice(msg.chat.Id,
+  "⭐ Premium (30 kun)",
+    "Cheksiz AI + tezkor javoblar",
+    "premium_30_days",
+    "",          // Stars uchun bo‘sh qoladi
+    "XTR",       // Telegram Stars
+    [{
+      label: "Premium 30 kun", amount:100
+    }]
+)
 });
 
-/* ===== HELP ===== */
-bot.onText(/\/help/, msg => {
-  bot.sendMessage(msg.chat.id,
+bot.onText(/\/ref/, msg => {
+  const link = `https://t.me/${process.env.BOT_USERNAME}?start=${msg.chat.id}`;
+  bot.sendMessage(
+    msg.chat.id,
+`👥 Do‘stlarni chaqiring!
+
+🎁 Har 1 kishi = +${REF_BONUS_DAYS} kun PREMIUM🔗 Havola:
+${link}`
+  );
+});
+
+bot.onText(/\/help/, msg =>
+  bot.sendMessage(
+    msg.chat.id,
 `ℹ️ Yordam
 
-/ai — AI bilan suhbat
-/premium — Premium olish
+/ai — AI suhbat
+/premium — Premium
 /ref — Do‘st chaqirish
 
 🧠 Matn yozing
-🖼 Rasm yuboring`);
-});
+🖼 Rasm yuboring
+  `)
+);
 
-/* ===== PAYMENT SUCCESS ===== */
-bot.on("successful_payment", async msg => {
-  const chatId = msg.chat.id;
-  const until = new Date(Date.now() + 30 * 86400000);
-
-  await User.updateOne(
-    { chatId },
-    { isPremium: true, premiumUntil: until },
-    { upsert: true }
-  );
-
-  bot.sendMessage(chatId,
-    "⭐ To‘lov qabul qilindi!\nPremium 30 kunga yoqildi ✅");
-});
-
-/* ===== TEXT ===== */
+/* ================= AI TEXT (PREMIUM SPEED) ================= */
 bot.on("message", async msg => {
   if (!msg.text || msg.text.startsWith("/")) return;
 
+  const chatId = msg.chat.id;
+  const text = msg.text.trim();
+  const questionKey = text.toLowerCase();
 
-const ok = await checkLimit(msg.chat.id);
+  const user = await User.findOne({ chatId });
+  const isPremium = user?.isPremium && user?.premiumUntil > new Date();
+
+  const ok = await checkLimit(chatId);
   if (!ok) {
-    return bot.sendMessage(msg.chat.id,
-      "❌ Kunlik limit tugadi\n⭐ /premium orqali oling");
+    return bot.sendMessage(
+      chatId,
+      "❌ Kunlik limit tugadi\n⭐ Premium bilan tez va cheksiz foydalaning"
+    );
   }
+
+  // CACHE (premium ham, free ham)
+  const cached = getCache(questionKey);
+  if (cached) return bot.sendMessage(chatId, cached);
+
+  // ⚡ typing tezligi
+  await showTyping(chatId, isPremium ? 1500 : 4500);
 
   const res = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
+    temperature: isPremium ? 0.5 : 0.7,
     messages: [
-      { role: "system", content: "Answer in the user's language clearly." },
-      { role: "user", content: msg.text }
+      {
+        role: "system",
+        content: isPremium
+          ? "You are a fast, professional assistant. Answer briefly and clearly."
+          : "Answer clearly in user's language."
+      },
+      { role: "user", content: text }
     ]
   });
 
-  bot.sendMessage(msg.chat.id, res.choices[0].message.content);
+  const answer = res.choices[0].message.content;
+  setCache(questionKey, answer);
+
+  await bot.sendMessage(chatId, answer);
 });
 
-/* ===== IMAGE ===== */
+/* ================= IMAGE ================= */
 bot.on("photo", async msg => {
-  const ok = await checkLimit(msg.chat.id);
-  if (!ok) return bot.sendMessage(msg.chat.id, "❌ Limit tugadi");
+  const chatId = msg.chat.id;
+  const ok = await checkLimit(chatId);
+  if (!ok) return bot.sendMessage(chatId, "❌ Limit tugadi");
 
   const photo = msg.photo.at(-1);
   const imageUrl = await bot.getFileLink(photo.file_id);
 
+  await showTyping(chatId, 3000);
+
   const res = await openai.responses.create({
     model: "gpt-4.1-mini",
-    input: [{
-      role: "user",
-      content: [
-        { type: "input_text", text: "Rasmni tahlil qil va tushuntir" },
-        { type: "input_image", image_url: imageUrl }
-      ]
-    }]
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "Rasmni aniq tahlil qil" },
+          { type: "input_image", image_url: imageUrl }
+        ]
+      }
+    ]
   });
 
-  bot.sendMessage(msg.chat.id, res.output_text);
+  bot.sendMessage(chatId, res.output_text);
 });
 
-/* ===== PREMIUM AUTO-O‘CHISH ===== */
+/* ================= PREMIUM AUTO-O‘CHISH ================= */
 cron.schedule("0 * * * *", async () => {
   const now = new Date();
   const expired = await User.find({
@@ -221,9 +270,11 @@ cron.schedule("0 * * * *", async () => {
     u.isPremium = false;
     u.premiumUntil = null;
     await u.save();
-    bot.sendMessage(u.chatId,
-      "⏳ Premium muddati tugadi.\n/premium orqali qayta yoqing.");
+    bot.sendMessage(
+      u.chatId,
+      "⏳ Premium muddati tugadi.\n/premium orqali qayta yoqing."
+    );
   }
 });
 
-console.log("🤖 BOT ISHGA TUSHDI");
+console.log("🚀 BOT TEZ, BARQAROR VA TAYYOR");
