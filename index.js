@@ -29,6 +29,19 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, {
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+const chatHistory = {};
+//Xotiraga qo'shish funksiyasi //
+function addToHistory(chatId,role,content) {
+  if (!chatHistory[chatId])
+  chatHistory[chatId] = [];
+chatHistory[chatId].push({role, content});
+
+// Oxirgi 10 ta xabarni saqlaymiz
+
+if (chatHistory[chatId].length > 10) {
+  chatHistory[chatId].shift();
+}
+}
 
 /**** MONGO ****/
 mongoose.connect(process.env.MONGO_URI)
