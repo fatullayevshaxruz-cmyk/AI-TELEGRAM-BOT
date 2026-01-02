@@ -264,29 +264,50 @@ bot.on("message", async msg => {
 
 /**** IMAGE ****/
 bot.on("photo", async msg => {
-  const ok = await checkLimit(msg.chat.id);
-  if (!ok) return bot.sendMessage(msg.chat.id, "❌ Limit tugadi");
+  const chatId = msg.chat.id;
 
-  const user = await User.findOne({ chatId: msg.chat.id });
-  const isPremium = user?.isPremium && user?.premiumUntil > new Date();
+  const ok = await checkLimit(chatId);
+  if (!ok) {
+    return bot.sendMessage(
+      chatId,
+      "❌ Kunlik limit tugadi.\n⭐ Premium bilan cheksiz foydalaning"
+    );
+  }
 
   const photo = msg.photo.at(-1);
   const imageUrl = await bot.getFileLink(photo.file_id);
 
-  const modelName = isPremium ? "gpt-4.1" : "gpt-4.1-mini";
+  await bot.sendChatAction(chatId, "typing");
 
   const res = await openai.responses.create({
-    model: modelName,
-    input: [{
-      role: "user",
-      content: [
-        { type: "input_text", text: "Analyze, translate and explain errors in the image" },
-        { type: "input_image", image_url: imageUrl }
-      ]
-    }]
+    model: "gpt-4.1-mini",
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: 
+`Rasmdagi barcha matnni foydalanuvchi tiliga tarjima qil.
+So‘ng pastida qisqa va tushunarli qilib mazmunini tushuntir.`
+
+`QOIDALAR:
+- Avval: "📘 TARJIMA" sarlavhasi ostida tarjima
+- Keyin: "📝 TUSHUNTIRISH" sarlavhasi ostida izoh
+- Hech qanday grammatik tahlil yoki xato izlash yozma
+- Sodda va tushunarli yoz`
+
+          },
+          {
+            type: "input_image",
+            image_url: imageUrl
+          }
+        ]
+      }
+    ]
   });
 
-  bot.sendMessage(msg.chat.id, res.output_text);
+  bot.sendMessage(chatId, res.output_text);
 });
 
 /**** PREMIUM AUTO OFF ****/
