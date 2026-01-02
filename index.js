@@ -15,14 +15,18 @@ mongoose.connect(process.env.MONGO_URI)
 
 /* ================= USER MODEL ================= */
 const userSchema = new mongoose.Schema({
-  chatId: Number,
-  daily: { type: Number, default: 0 },
+  chatId: {
+    type:Number,
+    unique:true,
+    require:true,
+    index:true
+  },
+  daily:{type: Number, default: 0},
   date: String,
-  isPremium: { type: Boolean, default: false },
+  isPremium: {type:Boolean, default:false},
   premiumUntil: Date,
   referredBy: Number
 });
-const User = mongoose.model("User", userSchema);
 
 /* ================= HELPERS ================= */
 const today = () => new Date().toISOString().slice(0, 10);
@@ -148,7 +152,7 @@ Premium bilan bot ancha tez ishlaydi 🚀`
   // Agar Stars chiqsa, shu joyda sendInvoice ishlaydi
   // bot.sendInvoice(...)
   //Telegram stars (chiqganda ishklaydi) 
-bot.sendInvoice(msg.chat.Id,
+bot.sendInvoice(msg.chat.id,
   "⭐ Premium (30 kun)",
     "Cheksiz AI + tezkor javoblar",
     "premium_30_days",
