@@ -533,7 +533,41 @@
     });
 
     /* ===== IMAGE TRANSLATION ===== */
+    // Photo handler (existing code)
     bot.on("photo", async msg => {
+      await handleImageTranslation(msg, "photo");
+    });
+
+    // Document handler (NEW - for large images)
+    bot.on("document", async msg => {
+      const doc = msg.document;
+      
+      // Faqat rasm formatlarini qabul qilish
+      const imageFormats = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic'];
+      
+      if (!imageFormats.includes(doc.mime_type)) {
+        return; // Rasm emas, boshqa handler ishlaydi
+      }
+      
+      // Rasm hajmini tekshirish
+      const fileSizeMB = doc.file_size / (1024 * 1024);
+      
+      if (fileSizeMB > 20) {
+        return bot.sendMessage(msg.chat.id, 
+    `❌ Rasm juda katta!
+
+    📊 Sizning rasm: ${fileSizeMB.toFixed(2)} MB
+    ✅ Maximum: 20 MB
+
+    💡 Kichikroq rasm yuboring yoki rasmni siqib yuboring.`
+        );
+      }
+      
+      await handleImageTranslation(msg, "document");
+    });
+
+    // Universal image handler
+    async function handleImageTranslation(msg, type) {
       const chatId = msg.chat.id;
       
       try {
@@ -556,9 +590,34 @@
         
         bot.sendMessage(chatId, "📸 Rasm qabul qilindi. Tahlil qilinmoqda...");
         
-        // Get the highest quality photo
-        const photo = msg.photo[msg.photo.length - 1];
-        const file = await bot.getFile(photo.file_id);
+        // Get file based on type
+        let fileId;
+        let fileSize;
+        
+        if (type === "photo") {
+          const photo = msg.photo[msg.photo.length - 1];
+          fileId = photo.file_id;
+          fileSize = photo.file_size;
+        } else {
+          fileId = msg.document.file_id;
+          fileSize = msg.document.file_size;
+        }
+        
+        // Check file size (Telegram getFile limit is 20MB)
+        const fileSizeMB = fileSize / (1024 * 1024);
+        
+        if (fileSizeMB > 20) {
+          return bot.sendMessage(chatId, 
+    `❌ Rasm juda katta!
+
+    📊 Sizning rasm: ${fileSizeMB.toFixed(2)} MB
+    ✅ Maximum: 20 MB
+
+    💡 Telegram "Compress Image" opsiyasi bilan yuboring.`
+          );
+        }
+        
+        const file = await bot.getFile(fileId);
         const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
         
         // OpenAI Vision API
@@ -588,13 +647,14 @@
                 {
                   type: "image_url",
                   image_url: {
-                    url: fileUrl
+                    url: fileUrl,
+                    detail: "high" // High quality for better OCR
                   }
                 }
               ]
             }
           ],
-          max_tokens: 1000
+          max_tokens: 1500
         });
         
         const result = response.choices[0].message.content;
@@ -611,7 +671,7 @@
           saveData();
           
           bot.sendMessage(chatId, 
-    ` 🎉 NEW ACHIEVEMENT UNLOCKED!
+    `🎉 NEW ACHIEVEMENT UNLOCKED!
 
     📸 Image Explorer
     Translate your first image
@@ -622,32 +682,42 @@
         
         saveData();
         
-        bot.sendMessage(chatId, 
-    `📸 RASM TAHLILI
+        bot.sendMessage(chatId, `
+    📸 RASM TAHLILI
 
     ${result}
 
     📊 Statistics:
     ⭐ Score: ${user.score} (+1)
     📸 Images translated: ${user.imagesTranslated}
+    📏 Image size: ${fileSizeMB.toFixed(2)} MB
 
-    💡 Tip: Tarjima rejimida matn yoki rasmlarni yuboring!`
-        );
+
+    💡 Tip: Tarjima rejimida matn yoki rasmlarni yuboring!
+        `);
         
       } catch (error) {
         console.error("Image translation error:", error);
-        bot.sendMessage(chatId, 
-    `❌ Rasmni tahlil qilishda xatolik yuz berdi.
-
-    Sabablari:
-    - Rasm juda katta (5MB dan kichik bo'lishi kerak)
-    - Internet aloqasi zaif
-    - Rasm formati noto'g'ri
-
-    Qaytadan urinib ko'ring yoki boshqa rasm yuboring.`
-        );
+        
+        let errorMessage = "❌ Rasmni tahlil qilishda xatolik yuz berdi.\n\n";
+        
+        if (error.message?.includes("Request Entity Too Large")) {
+          errorMessage += "Sabab: Rasm juda katta (20MB dan oshmasligi kerak)\n";
+        } else if (error.message?.includes("timeout")) {
+          errorMessage += "Sabab: Internet aloqasi zaif yoki server band\n";
+        } else {
+          errorMessage += "Mumkin bo'lgan sabablar:\n";
+          errorMessage += "- Rasm formati noto'g'ri\n";
+          errorMessage += "- Internet aloqasi zaif\n";
+          errorMessage += "- OpenAI serveri band\n";
+        }
+        
+        errorMessage += "\nQaytadan urinib ko'ring yoki boshqa rasm yuboring.";
+        
+        bot.sendMessage(chatId, errorMessage);
       }
-    });
+    }
+   
 
     /* ===== MODE SWITCH ===== */
     bot.on("message", async msg => {
