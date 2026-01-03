@@ -1,110 +1,99 @@
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const OpenAI = require("openai");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const mongoose = require("mongoose");
 const fs = require("fs");
 const path = require("path");
+const gTTS = require("gtts");
 
 /* ================= INIT ================= */
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const gemini = genAI.getGenerativeModel({ model: "gemini-pro" });
+/* ================= MONGODB ================= */
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB ulandi"))
+  .catch(err => console.error("❌ MongoDB xato:", err));
 
-/* ================= LOCAL DB ================= */
-const DATA_FILE = path.join(__dirname, "data.json");
-let userData = fs.existsSync(DATA_FILE)
-  ? JSON.parse(fs.readFileSync(DATA_FILE))
-  : {};
+/* ================= USER SCHEMA ================= */
+const userSchema = new mongoose.Schema({
+  chatId: Number,
+  score: { type: Number, default: 0 },
+  level: { type: String, default: "A1" },
+  sessions: { type: Number, default: 0 },
+  badge: { type: String, default: "🔰 Starter" },
+  streak: { type: Number, default: 0 },
+  lastActive: String,
+  achievements: [String],
+  commonMistakes: Array,
+  lastMilestone: { type: Number, default: 0 },
+  imagesTranslated: { type: Number, default: 0 }
+});
+const User = mongoose.model("User", userSchema);
 
-function saveData() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(userData, null, 2));
+/* ================= MEMORY (CHEAP) ================= */
+const chatHistory = {};   // faqat oxirgi 2 ta xabar
+const userMode = {};      // chat | translate | speak
+
+function pushHistory(chatId, role, content) {
+  if (!chatHistory[chatId]) chatHistory[chatId] = [];
+  chatHistory[chatId].push({ role, content });
+  if (chatHistory[chatId].length > 2) chatHistory[chatId].shift(); // 💸 TEJAM
 }
 
-/* ================= MEMORY ================= */
-const chatHistory = {};
-const userMode = {}; // chat | translate | speak
-
-/* ================= CACHE ================= */
-const aiCache = new Map();
-const CACHE_TTL = 1000 * 60 * 30;
-
-function getCache(key) {
-  const item = aiCache.get(key);
-  if (!item) return null;
-  if (Date.now() > item.expire) {
-    aiCache.delete(key);
-    return null;
-  }
-  return item.value;
+/* ================= BADGE ================= */
+function getBadge(score) {
+  if (score >= 50) return "🏆 Fluent";
+  if (score >= 30) return "🥇 Advanced";
+  if (score >= 15) return "🥈 Intermediate";
+  if (score >= 5) return "🥉 Beginner";
+  return "🔰 Starter";
 }
 
-function setCache(key, value) {
-  aiCache.set(key, { value, expire: Date.now() + CACHE_TTL });
-}
-
-/* ================= PROMPTS (TOKEN TEJAMKOR) ================= */
-const CHAT_PROMPT = 
-`Answer in the user's language.
-Be brief (max 3–4 sentences).
-No repetition.`
-;
-
-const TRANSLATE_PROMPT = 
-`Translate the text into Uzbek (Cyrillic).
-Add only 1 short explanation if needed.`
-;
-
-const SPEAK_PROMPT = 
-`You are an English teacher.
-Correct mistakes briefly.
-1 short explanation.
-Speak only English.`
-;
-
-/* ================= GEMINI FALLBACK ================= */
-async function askGemini(text) {
-  const result = await gemini.generateContent(text);
-  return result.response.text();
-}
-
-/* ================= START ================= */
-bot.onText(/\/start/, msg => {
+/* ================= /START ================= */
+bot.onText(/\/start/, async msg => {
   const chatId = msg.chat.id;
 
-  if (!userData[chatId]) {
-    userData[chatId] = {
-      score: 0,
-      level: "A1",
-      sessions: 0
-    };
-    saveData();
-  }
+  let user = await User.findOne({ chatId });
+  if (!user) user = await User.create({ chatId });
 
   userMode[chatId] = "chat";
   chatHistory[chatId] = [];
 
-  bot.sendMessage(
-    chatId,
+  bot.sendMessage(chatId,
 `👋 Salom!
 
-🤖 AI SPEAKING BOT
+🤖 AI English Learning Bot
+
 🧠 Chat AI
-📘 Tarjima
-🗣 Speak English
+📘 Tarjima (matn + rasm)
+🗣 Speak English (ovoz bilan)
+🏅 Progress, Level, Badge
 
 👇 Rejimni tanlang`,
-    {
-      reply_markup: {
-        keyboard: [
-          [{ text: "🧠 Chat AI" }, { text: "📘 Tarjima" }],
-          [{ text: "🗣 Speak English" }]
-        ],
-        resize_keyboard: true
-      }
-    }
-  );
+{
+  reply_markup: {
+    keyboard: [
+      [{ text: "🧠 Chat AI" }, { text: "📘 Tarjima" }],
+      [{ text: "🗣 Speak English" }],
+      [{ text: "/help" }]
+    ],
+    resize_keyboard: true
+  }
+});
+});
+
+/* ================= HELP ================= */
+bot.onText(/\/help/, msg => {
+  bot.sendMessage(msg.chat.id,
+`ℹ️ YORDAM
+
+🧠 Chat AI — savol-javob
+📘 Tarjima — matn yoki rasm
+🗣 Speak English — gapirib o‘rganish
+
+📸 Rasm yuborsangiz — tarjima qilinadi
+🎤 Ovoz yuborsangiz — tekshiriladi`);
 });
 
 /* ================= MODE SWITCH ================= */
@@ -115,69 +104,122 @@ bot.on("message", async msg => {
 
   if (text === "🧠 Chat AI") {
     userMode[chatId] = "chat";
-    return bot.sendMessage(chatId, "🧠 Chat AI yoqildi. Savol yozing.");
+    return bot.sendMessage(chatId, "🧠 Chat AI yoqildi.");
   }
 
   if (text === "📘 Tarjima") {
     userMode[chatId] = "translate";
-    return bot.sendMessage(chatId, "📘 Tarjima rejimi. Matn yuboring.");
+    return bot.sendMessage(chatId, "📘 Tarjima rejimi yoqildi.");
   }
 
   if (text === "🗣 Speak English") {
     userMode[chatId] = "speak";
-    return bot.sendMessage(chatId, "🗣 Speak English. Inglizcha yozing.");
+    return bot.sendMessage(chatId, "🗣 Speak English yoqildi. Ovoz yuboring!");
   }
 
   if (text.startsWith("/")) return;
 
-  /* ================= CHAT HISTORY ================= */
-  if (!chatHistory[chatId]) chatHistory[chatId] = [];
-  chatHistory[chatId].push({ role: "user", content: text });
+  /* ================= TEXT AI (ARZON) ================= */
+  let systemPrompt = "Answer clearly in user's language.";
 
-  if (chatHistory[chatId].length > 6) {
-    chatHistory[chatId].shift();
+  if (userMode[chatId] === "translate") {
+    systemPrompt = "Translate the text to Uzbek clearly.";
   }
 
-  /* ================= CACHE ================= */
-  const cacheKey = `${userMode[chatId]}:${text.toLowerCase()}`;
-  const cached = getCache(cacheKey);
-  if (cached) {
-    return bot.sendMessage(chatId, cached);
+  if (userMode[chatId] === "speak") {
+    systemPrompt = "Reply only in English. Correct mistakes briefly.";
   }
 
-  /* ================= PROMPT SELECT ================= */
-  let systemPrompt = CHAT_PROMPT;
-  if (userMode[chatId] === "translate") systemPrompt = TRANSLATE_PROMPT;
-  if (userMode[chatId] === "speak") systemPrompt = SPEAK_PROMPT;
+  pushHistory(chatId, "user", text);
 
-  /* ================= AI REQUEST ================= */
-  let answer;
   try {
     const res = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      temperature: 0.4,
-      max_tokens: 400,
+      model: "gpt-4o-mini",       // 💸 ENG ARZON
+      max_tokens: 180,            // 💸 CHEKLOV
+      temperature: 0.6,
       messages: [
         { role: "system", content: systemPrompt },
         ...chatHistory[chatId]
       ]
     });
+const answer = res.choices[0].message.content;
+    pushHistory(chatId, "assistant", answer);
+    bot.sendMessage(chatId, answer);
 
-    answer = res.choices[0].message.content;
-
-  } catch (err) {
-    console.log("⚠️ OpenAI ishlamadi → Gemini ishladi");
-    answer = await askGemini(text);
+  } catch {
+    bot.sendMessage(chatId, "❌ Xatolik yuz berdi.");
   }
-
-  chatHistory[chatId].push({ role: "assistant", content: answer });
-  setCache(cacheKey, answer);
-
-  bot.sendMessage(chatId, answer);
 });
 
-/* ================= READY ================= */
-console.log("🚀 AI BOT ISHGA TUSHDI");
-console.log("✅ OpenAI + Gemini fallback");
-console.log("✅ Cache enabled");
-console.log("✅ Token optimized (40–50%)");
+/* ================= IMAGE TRANSLATION (LIMITED) ================= */
+bot.on("photo", async msg => {
+  const chatId = msg.chat.id;
+  let user = await User.findOne({ chatId });
+
+  if (user.imagesTranslated >= 2) {
+    return bot.sendMessage(chatId,
+      "📸 Rasm limiti tugadi (kuniga 2 ta).");
+  }
+
+  const photo = msg.photo.at(-1);
+  const file = await bot.getFile(photo.file_id);
+  const imageUrl =
+    `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini",     // ❌ gpt-4o emas → 💸
+    max_tokens: 300,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "Extract text and translate to Uzbek." },
+        { type: "image_url", image_url: { url: imageUrl } }
+      ]
+    }]
+  });
+
+  user.imagesTranslated += 1;
+  user.score += 1;
+  user.badge = getBadge(user.score);
+  await user.save();
+
+  bot.sendMessage(chatId, res.choices[0].message.content);
+});
+
+/* ================= VOICE (SPEAK MODE ONLY) ================= */
+bot.on("voice", async msg => {
+  const chatId = msg.chat.id;
+  if (userMode[chatId] !== "speak") return;
+
+  const file = await bot.getFile(msg.voice.file_id);
+  const oggPath = path.join(__dirname, `${chatId}.ogg`);
+  const mp3Path = path.join(__dirname, `${chatId}.mp3`);
+
+  const stream = bot.getFileStream(file.file_id);
+  stream.pipe(fs.createWriteStream(oggPath)).on("finish", async () => {
+
+    const transcript = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(oggPath),
+      model: "whisper-1"
+    });
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      max_tokens: 120,
+      messages: [
+        { role: "system", content: "Correct the English shortly." },
+        { role: "user", content: transcript.text }
+      ]
+    });
+
+    const gtts = new gTTS(completion.choices[0].message.content, "en");
+    gtts.save(mp3Path, async () => {
+      await bot.sendVoice(chatId, mp3Path);
+      fs.unlinkSync(mp3Path);
+    });
+
+    fs.unlinkSync(oggPath);
+  });
+});
+
+console.log("🚀 BOT ISHGA TUSHDI (MongoDB + Cheap GPT)");
