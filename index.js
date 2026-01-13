@@ -31,6 +31,40 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model("User", userSchema);
 
+/* ================= SUBSCRIBER SCHEMA (STATISTICS) ================= */
+const subscriberSchema = new mongoose.Schema({
+  telegramId: { type: Number, unique: true, required: true },
+  username: String,
+  firstName: String,
+  lastName: String,
+  createdAt: { type: Date, default: Date.now },
+  lastActiveAt: { type: Date, default: Date.now }
+});
+const Subscriber = mongoose.model("Subscriber", subscriberSchema);
+
+/* ================= TRACK USER MIDDLEWARE ================= */
+async function trackUser(msg) {
+  if (!msg.from) return;
+  const telegramId = msg.from.id;
+  try {
+    await Subscriber.findOneAndUpdate(
+      { telegramId },
+      {
+        $setOnInsert: {
+          username: msg.from.username,
+          firstName: msg.from.first_name,
+          lastName: msg.from.last_name,
+          createdAt: new Date()
+        },
+        $set: { lastActiveAt: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+  } catch (err) {
+    console.error("TrackUser xato:", err);
+  }
+}
+
 /* ================= MEMORY (CHEAP) ================= */
 const chatHistory = {};   // faqat oxirgi 2 ta xabar
 const userMode = {};      // chat | translate | speak
@@ -53,6 +87,7 @@ function getBadge(score) {
 /* ================= /START ================= */
 bot.onText(/\/start/, async msg => {
   const chatId = msg.chat.id;
+  await trackUser(msg);
 
   let user = await User.findOne({ chatId });
   if (!user) user = await User.create({ chatId });
@@ -61,7 +96,7 @@ bot.onText(/\/start/, async msg => {
   chatHistory[chatId] = [];
 
   bot.sendMessage(chatId,
-`👋 Salom!
+    `👋 Salom!
 
 🤖 AI English Learning Bot
 
@@ -71,22 +106,23 @@ bot.onText(/\/start/, async msg => {
 🏅 Progress, Level, Badge
 
 👇 Rejimni tanlang`,
-{
-  reply_markup: {
-    keyboard: [
-      [{ text: "🧠 Chat AI" }, { text: "📘 Tarjima" }],
-      [{ text: "🗣 Speak English" }],
-      [{ text: "/help" }]
-    ],
-    resize_keyboard: true
-  }
-});
+    {
+      reply_markup: {
+        keyboard: [
+          [{ text: "🧠 Chat AI" }, { text: "📘 Tarjima" }],
+          [{ text: "🗣 Speak English" }],
+          [{ text: "/help" }]
+        ],
+        resize_keyboard: true
+      }
+    });
 });
 
 /* ================= HELP ================= */
-bot.onText(/\/help/, msg => {
+bot.onText(/\/help/, async msg => {
+  await trackUser(msg);
   bot.sendMessage(msg.chat.id,
-`ℹ️ YORDAM
+    `ℹ️ YORDAM
 
 🧠 Chat AI — savol-javob
 📘 Tarjima — matn yoki rasm
@@ -96,9 +132,36 @@ bot.onText(/\/help/, msg => {
 🎤 Ovoz yuborsangiz — tekshiriladi`);
 });
 
+/* ================= STATS (ADMIN ONLY) ================= */
+bot.onText(/\/stats/, async msg => {
+  const chatId = msg.chat.id;
+  await trackUser(msg);
+
+  const adminId = Number(process.env.ADMIN_ID);
+  if (msg.from.id !== adminId) {
+    return bot.sendMessage(chatId, "⛔ Bu buyruq faqat admin uchun.");
+  }
+
+  const now = new Date();
+  const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
+  const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+
+  const totalUsers = await Subscriber.countDocuments();
+  const active24h = await Subscriber.countDocuments({ lastActiveAt: { $gte: oneDayAgo } });
+  const active7d = await Subscriber.countDocuments({ lastActiveAt: { $gte: sevenDaysAgo } });
+
+  bot.sendMessage(chatId,
+    `📊 BOT STATISTIKASI
+
+👥 Jami foydalanuvchilar: ${totalUsers}
+🟢 24 soatda faol: ${active24h}
+📅 7 kunda faol: ${active7d}`);
+});
+
 /* ================= MODE SWITCH ================= */
 bot.on("message", async msg => {
   const chatId = msg.chat.id;
+  await trackUser(msg);
   const text = msg.text;
   if (!text) return;
 
@@ -142,7 +205,7 @@ bot.on("message", async msg => {
         ...chatHistory[chatId]
       ]
     });
-const answer = res.choices[0].message.content;
+    const answer = res.choices[0].message.content;
     pushHistory(chatId, "assistant", answer);
     bot.sendMessage(chatId, answer);
 
@@ -154,6 +217,7 @@ const answer = res.choices[0].message.content;
 /* ================= IMAGE TRANSLATION (LIMITED) ================= */
 bot.on("photo", async msg => {
   const chatId = msg.chat.id;
+  await trackUser(msg);
   let user = await User.findOne({ chatId });
 
   if (user.imagesTranslated >= 2) {
@@ -189,6 +253,7 @@ bot.on("photo", async msg => {
 /* ================= VOICE (SPEAK MODE ONLY) ================= */
 bot.on("voice", async msg => {
   const chatId = msg.chat.id;
+  await trackUser(msg);
   if (userMode[chatId] !== "speak") return;
 
   const file = await bot.getFile(msg.voice.file_id);
