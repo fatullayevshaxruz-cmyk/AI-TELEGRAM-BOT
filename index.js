@@ -7,8 +7,35 @@ const path = require("path");
 const gTTS = require("gtts");
 
 /* ================= INIT ================= */
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.BOT_TOKEN, {
+  polling: {
+    interval: 300,
+    autoStart: true,
+    params: {
+      timeout: 10
+    }
+  }
+});
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+/* ================= ERROR HANDLERS ================= */
+// Polling xatolarini ushlash
+bot.on("polling_error", (error) => {
+  console.error("❌ Polling xato:", error.code, error.message);
+});
+
+bot.on("error", (error) => {
+  console.error("❌ Bot xato:", error.message);
+});
+
+// Unhandled promise rejection
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("⚠️ Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("⚠️ Uncaught Exception:", error);
+});
 
 /* ================= CONFIG ================= */
 const ADMIN_ID = Number(process.env.ADMIN_ID);
