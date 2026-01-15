@@ -7,15 +7,23 @@ const path = require("path");
 const gTTS = require("gtts");
 
 /* ================= INIT ================= */
-const bot = new TelegramBot(process.env.BOT_TOKEN, {
-  polling: {
-    interval: 300,
-    autoStart: true,
-    params: {
-      timeout: 10
-    }
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: false });
+
+// Avval webhookni tozalab, keyin pollingni boshlash
+(async () => {
+  try {
+    // Eski webhookni o'chirish va kutilayotgan xabarlarni tashlash
+    await bot.deleteWebHook({ drop_pending_updates: true });
+    console.log("✅ Webhook tozalandi");
+
+    // Pollingni boshlash
+    await bot.startPolling({ restart: false });
+    console.log("✅ Polling boshlandi");
+  } catch (err) {
+    console.error("❌ Bot ishga tushirishda xato:", err.message);
   }
-});
+})();
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /* ================= ERROR HANDLERS ================= */
@@ -525,8 +533,7 @@ bot.on("message", async msg => {
   if (text.startsWith("/")) return;
 
   // Maxsus tugmalarni tekshirish
-  if (text === "🧠 Chat AI" || text === "📘 Tarjima" || text === "🗣 Speak English" ||
-    text === "👤 Profil" || text === "🔗 Referal") {
+  if (text === "🧠 Chat AI" || text === "📘 Tarjima" || text === "🗣 Speak English") {
 
     // Kanal tekshiruvi
     if (!await requireSubscription(chatId, userId)) return;
@@ -546,7 +553,11 @@ bot.on("message", async msg => {
       return bot.sendMessage(chatId, "🗣 <b>Speak English</b> rejimi yoqildi.\n\nOvoz xabar yuboring!", { parse_mode: "HTML" });
     }
 
-    // Profil va Referal alohida handler larda
+    return;
+  }
+
+  // Profil va Referal alohida bot.onText handler larda - bu yerda skip
+  if (text === "👤 Profil" || text === "🔗 Referal") {
     return;
   }
 
